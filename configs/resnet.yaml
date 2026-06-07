@@ -1,0 +1,29 @@
+# ResNet-18 配置文件
+# 残差网络（ResNet）引入了跳跃连接，解决了深层网络的梯度消失问题
+# 这是针对 CIFAR-10 的简化版本（不使用 7x7 卷积和初始池化层）
+
+model:
+  name: resnet
+  num_classes: 10
+
+training:
+  batch_size: 128
+  epochs: 50
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  scheduler:
+    type: step
+    step_size: 25
+    gamma: 0.1
+
+data:
+  dataset: cifar10
+  num_workers: 2
+  val_split: 0.1
+  data_dir: ./data
+
+output:
+  checkpoint_dir: ./results/checkpoints
+  log_dir: ./results/logs
+  plot_dir: ./results/plots

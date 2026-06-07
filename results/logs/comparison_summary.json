@@ -1,0 +1,34 @@
+{
+  "lenet": {
+    "test_acc": 64.02,
+    "test_loss": 1.0017820020675658,
+    "num_params": 62006,
+    "training_time": 1800,
+    "inference_speed": 3956.807323770453,
+    "best_val_acc": 64.68
+  },
+  "simple_cnn": {
+    "test_acc": 77.08,
+    "test_loss": 0.6651123632431031,
+    "num_params": 652426,
+    "training_time": 2700,
+    "inference_speed": 2480.7422240223486,
+    "best_val_acc": 77.56
+  },
+  "vgg": {
+    "test_acc": 81.74,
+    "test_loss": 0.5405650841712951,
+    "num_params": 9756426,
+    "training_time": 7200,
+    "inference_speed": 655.7433434601909,
+    "best_val_acc": 83.2
+  },
+  "resnet": {
+    "test_acc": 85.52,
+    "test_loss": 0.44834015572071073,
+    "num_params": 11173962,
+    "training_time": 8100,
+    "inference_speed": 263.76880097702343,
+    "best_val_acc": 86.56
+  }
+}

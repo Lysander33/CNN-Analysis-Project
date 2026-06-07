@@ -1,0 +1,30 @@
+# VGG-11 配置文件
+# VGG 网络的核心思想：用堆叠的小卷积核（3x3）代替大卷积核
+# 在相同感受野下，更深的网络有更强的表达能力，但参数量也更大
+
+model:
+  name: vgg
+  num_classes: 10
+  dropout: 0.5        # VGG 全连接层的 Dropout 比率
+
+training:
+  batch_size: 128
+  epochs: 50
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  scheduler:
+    type: step
+    step_size: 25
+    gamma: 0.1
+
+data:
+  dataset: cifar10
+  num_workers: 2
+  val_split: 0.1
+  data_dir: ./data
+
+output:
+  checkpoint_dir: ./results/checkpoints
+  log_dir: ./results/logs
+  plot_dir: ./results/plots

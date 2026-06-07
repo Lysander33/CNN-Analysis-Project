@@ -1,0 +1,30 @@
+# SimpleCNN 配置文件
+# 这是一个教学用的三层卷积网络，引入了 BatchNorm 和 Dropout 等现代训练技巧
+# 比 LeNet 深但比 VGG/ResNet 浅，适合初学者理解 CNN 的核心组件
+
+model:
+  name: simple_cnn
+  num_classes: 10
+  dropout: 0.3        # Dropout 比率，用于防止过拟合
+
+training:
+  batch_size: 128
+  epochs: 50
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  scheduler:
+    type: step
+    step_size: 25
+    gamma: 0.1
+
+data:
+  dataset: cifar10
+  num_workers: 2
+  val_split: 0.1
+  data_dir: ./data
+
+output:
+  checkpoint_dir: ./results/checkpoints
+  log_dir: ./results/logs
+  plot_dir: ./results/plots

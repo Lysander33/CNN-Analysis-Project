@@ -1,0 +1,28 @@
+# LeNet-5 配置文件
+# 这是最经典的早期卷积神经网络（1998年），结构简单，适合作为基线模型
+
+model:
+  name: lenet
+  num_classes: 10
+
+training:
+  batch_size: 128
+  epochs: 50
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  scheduler:
+    type: step        # 学习率调度策略: step（阶梯式）, cosine（余弦退火）, none（不使用）
+    step_size: 25     # 每 step_size 个 epoch 衰减一次
+    gamma: 0.1        # 衰减因子: 每次衰减将学习率乘以 gamma
+
+data:
+  dataset: cifar10
+  num_workers: 2      # 数据加载的并行进程数（Windows 上自动设为 0）
+  val_split: 0.1      # 验证集占训练集的比例
+  data_dir: ./data
+
+output:
+  checkpoint_dir: ./results/checkpoints
+  log_dir: ./results/logs
+  plot_dir: ./results/plots

@@ -23,7 +23,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -244,6 +243,11 @@ class Trainer:
             print(f"{'='*60}")
 
         try:
+            # 断点续训时补齐 scheduler 已跳过的 epoch，保持余弦退火等调度器的相位正确
+            if start_epoch > 1 and self.scheduler is not None:
+                for _ in range(1, start_epoch):
+                    self.scheduler.step()
+
             for epoch in range(start_epoch, epochs + 1):
                 self.current_epoch = epoch
                 epoch_start = time.time()
@@ -317,11 +321,18 @@ class Trainer:
         print(f"\n{'='*60}")
         print(f"[测试模型] {self.model_name}")
 
-        # 加载最佳模型进行测试
+        # 加载最佳模型权重进行测试
+        # 新格式：pure state_dict → weights_only=True；旧格式：full dict → 回退
         best_path = os.path.join(self.checkpoint_dir, f"{self.model_name}_best.pth")
         if os.path.exists(best_path):
             print(f"[加载最佳模型] {best_path}")
-            self.load_checkpoint(best_path)
+            try:
+                state_dict = torch.load(best_path, map_location=self.device, weights_only=True)
+            except Exception:
+                ckpt = torch.load(best_path, map_location=self.device, weights_only=False)
+                state_dict = ckpt["model_state_dict"]
+                print("[警告] 旧格式 checkpoint 检测到，请重新训练以使用安全加载格式")
+            self.model.load_state_dict(state_dict)
 
         self.model.eval()
         running_loss = 0.0
@@ -349,31 +360,76 @@ class Trainer:
         print(f"{'='*60}\n")
         return test_loss, test_acc, all_predictions, all_targets
 
+    @torch.no_grad()
+    def evaluate_metrics(self, test_loader: DataLoader) -> Dict[str, Any]:
+        """测试并计算全量评估指标。
+
+        包含: 测试准确率、混淆矩阵、各类别准确率、推理速度。
+        供 main.py train_single_model() 和 generate_comparison.py 共用。
+
+        参数:
+            test_loader: 测试数据加载器。
+
+        返回:
+            包含 test_acc, test_loss, confusion_matrix, per_class_acc, inference_speed 的字典。
+        """
+        test_loss, test_acc, predictions, targets = self.test(test_loader)
+
+        # 混淆矩阵（向量化）
+        confusion_mat = np.zeros((10, 10), dtype=np.int64)
+        np.add.at(confusion_mat, (targets, predictions), 1)
+        row_sums = confusion_mat.sum(axis=1, keepdims=True)
+        confusion_mat_norm = np.divide(
+            confusion_mat, row_sums,
+            out=np.zeros_like(confusion_mat, dtype=np.float64),
+            where=row_sums > 0,
+        )
+        per_class_acc = 100.0 * confusion_mat_norm.diagonal()
+
+        # 推理速度
+        self.model.eval()
+        total_samples = 0
+        start = time.time()
+        for images, _ in test_loader:
+            images = images.to(self.device)
+            _ = self.model(images)
+            total_samples += images.size(0)
+        elapsed = time.time() - start
+        inference_speed = total_samples / elapsed if elapsed > 0 else 0
+
+        return {
+            "test_acc": test_acc,
+            "test_loss": test_loss,
+            "confusion_matrix": confusion_mat_norm,
+            "per_class_acc": per_class_acc,
+            "inference_speed": inference_speed,
+        }
+
     def save_checkpoint(self, is_best: bool = False) -> None:
         """保存模型检查点。
 
-        保存训练状态的完整快照，包括:
-        - 模型参数（state_dict）
-        - 优化器状态（可恢复训练）
-        - 训练历史
-        - 最佳验证准确率
+        best 检查点仅保存模型权重（state_dict），可安全地用 weights_only=True 加载。
+        final 检查点保存完整训练状态（含优化器、调度器、历史、配置），用于断点续训。
 
         参数:
-            is_best: 是否为最佳模型。最佳模型单独保存。
+            is_best: 是否为最佳模型。最佳模型仅保存 state_dict。
         """
         filename = f"{self.model_name}_{'best' if is_best else 'final'}.pth"
         filepath = os.path.join(self.checkpoint_dir, filename)
 
-        checkpoint = {
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
-            "history": self.history,
-            "best_val_acc": self.best_val_acc,
-            "epoch": self.current_epoch,
-            "config": self.config,
-        }
-        torch.save(checkpoint, filepath)
+        if is_best:
+            torch.save(self.model.state_dict(), filepath)
+        else:
+            checkpoint = {
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
+                "history": self.history,
+                "best_val_acc": self.best_val_acc,
+                "epoch": self.current_epoch,
+                "config": self.config,
+            }
+            torch.save(checkpoint, filepath)
 
     def load_checkpoint(self, path: str) -> int:
         """从检查点恢复完整训练状态。
@@ -391,7 +447,9 @@ class Trainer:
         返回:
             int: 检查点保存时的 epoch 编号，用于确定从哪个 epoch 继续训练。
         """
-        checkpoint = torch.load(path, map_location=self.device)
+        # weights_only=False：断点续训需要加载 dict 中的 config、history 等非 tensor 对象。
+        # 仅用于加载自己训练产生的 checkpoint，不加载第三方来源。
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 

@@ -51,7 +51,8 @@ pip install -r requirements.txt
 # 2. 快速验证环境（3 轮，~15 分钟）
 python main.py --compare --epochs 3
 
-# 3. 完整实验（15 轮，CPU 约 5-7 小时）
+# 3. 完整实验（使用配置文件默认的 50 轮，CPU 约 12-20 小时）
+#    建议先用 15 轮跑一遍快速对比：
 python main.py --compare --epochs 15
 ```
 
@@ -90,16 +91,19 @@ LeNet-5 (1998)  →  SimpleCNN  →  VGG-11 (2014)  →  ResNet-18 (2015)
 ### 单模型训练
 
 ```bash
-# 训练 LeNet-5（最快，~30 分钟/15 轮）
+# 训练 LeNet-5（最快，~30 分钟/50 轮）
 python main.py --model lenet
 
-# 训练 ResNet-18（~2.25 小时/15 轮）
+# 减少轮数快速实验
+python main.py --model lenet --epochs 15
+
+# 训练 ResNet-18（~7.5 小时/50 轮）
 python main.py --model resnet
 
 # 自定义超参数
 python main.py --model simple_cnn --epochs 30 --batch_size 64 --lr 0.001
 
-# 从 checkpoint 恢复中断的训练
+# 从 checkpoint 恢复中断的训练（仅支持 _final.pth）
 python main.py --resume results/checkpoints/resnet_final.pth
 
 # 恢复并延长训练（如从 15 轮延长到 30 轮）
@@ -109,7 +113,10 @@ python main.py --resume results/checkpoints/resnet_final.pth --epochs 30
 ### 全模型对比
 
 ```bash
-# 完整对比实验
+# 完整对比实验（使用配置文件中的默认 50 轮）
+python main.py --compare
+
+# 快速对比（15 轮，CPU 约 5-7 小时）
 python main.py --compare --epochs 15
 
 # 从已有 checkpoint 直接生成图表（无需重新训练！）
@@ -122,10 +129,10 @@ python generate_comparison.py
 |------|------|:---:|
 | `--model` / `-m` | 单模型训练：lenet, simple_cnn, vgg, resnet | lenet |
 | `--compare` / `-c` | 全模型对比模式 | — |
-| `--resume` | 从 checkpoint 恢复训练 | — |
-| `--epochs` / `-e` | 训练轮数 | 50 |
-| `--batch_size` / `-b` | 批次大小 | 128 |
-| `--lr` | 初始学习率 | 0.01 |
+| `--resume` | 从 `_final.pth` checkpoint 恢复训练（不含 `_best.pth`） | — |
+| `--epochs` / `-e` | 训练轮数（覆盖 YAML 配置） | YAML 配置 |
+| `--batch_size` / `-b` | 批次大小（覆盖 YAML 配置） | YAML 配置 |
+| `--lr` | 初始学习率（覆盖 YAML 配置） | YAML 配置 |
 | `--device` / `-d` | 训练设备：auto, cpu, cuda | auto |
 
 ---
@@ -323,15 +330,15 @@ python main.py --compare --batch_size 32
 训练中 `Ctrl+C` 暂停会自动保存 checkpoint。恢复训练：
 
 ```bash
-# 从最终 checkpoint 恢复
+# 从 final checkpoint 恢复（包含完整训练状态：权重、优化器、配置、历史）
 python main.py --resume results/checkpoints/resnet_final.pth
-
-# 从最佳模型恢复
-python main.py --resume results/checkpoints/simple_cnn_best.pth
 
 # 恢复并延长训练
 python main.py --resume results/checkpoints/resnet_final.pth --epochs 30
 ```
+
+> **注意**：`_best.pth` 仅保存模型权重（用于推理和评估），不包含训练状态，无法用于断点续训。断点续训必须使用 `_final.pth`。
+
 </details>
 
 <details>

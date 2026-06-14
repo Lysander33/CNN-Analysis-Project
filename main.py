@@ -26,6 +26,7 @@ import platform
 import random
 import sys
 import time
+import traceback
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -153,46 +154,14 @@ def train_single_model(
         trainer.fit(train_loader, val_loader)
         training_time = time.time() - train_start
 
-        # ========== 4. 测试 ==========
-        test_loss, test_acc, predictions, targets = trainer.test(test_loader)
-
-        # ========== 5. 额外指标 ==========
-        # 混淆矩阵（向量化计算，高效替代逐元素循环）
-        confusion_mat = np.zeros((10, 10), dtype=np.int64)
-        np.add.at(confusion_mat, (targets, predictions), 1)
-        # 按行归一化（召回率），避免除零
-        row_sums = confusion_mat.sum(axis=1, keepdims=True)
-        confusion_mat_norm = np.divide(
-            confusion_mat, row_sums,
-            out=np.zeros_like(confusion_mat, dtype=np.float64),
-            where=row_sums > 0,
-        )
-
-        # 各类别准确率（直接从混淆矩阵对角线获取，避免重复计算）
-        per_class_acc = 100.0 * confusion_mat_norm.diagonal()
-
-        # 推理速度（在测试集上侧量）
-        model.eval()
-        model.to(device)
-        inference_start = time.time()
-        total_samples = 0
-        with torch.no_grad():
-            for images, _ in test_loader:
-                images = images.to(device)
-                _ = model(images)
-                total_samples += images.size(0)
-        inference_time = time.time() - inference_start
-        inference_speed = total_samples / inference_time if inference_time > 0 else 0
+        # ========== 4. 测试与评估 ==========
+        metrics = trainer.evaluate_metrics(test_loader)
 
         result = {
-            "test_acc": test_acc,
-            "test_loss": test_loss,
+            **metrics,
             "num_params": num_params,
             "training_time": training_time,
             "history": trainer.history,
-            "confusion_matrix": confusion_mat_norm,
-            "per_class_acc": per_class_acc,
-            "inference_speed": inference_speed,
             "best_val_acc": trainer.best_val_acc,
         }
 
@@ -200,7 +169,6 @@ def train_single_model(
 
     except Exception as e:
         print(f"[错误] 训练 {model_name} 时发生异常: {e}")
-        import traceback
         traceback.print_exc()
         return None
 
@@ -221,7 +189,18 @@ def run_comparison(
     """
     all_results: Dict[str, dict] = {}
     all_histories: Dict[str, dict] = {}
-    output_config: Optional[Dict[str, str]] = None  # 首个模型的输出配置
+
+    # 从首个可用的配置文件读取 output 路径（不依赖训练成功的顺序）
+    output_config = None
+    for model_name in models_to_train:
+        cfg_path = os.path.join(args.config_dir, f"{model_name}.yaml")
+        if os.path.exists(cfg_path):
+            output_config = load_config(cfg_path)["output"]
+            break
+    if output_config is None:
+        print("[错误] 未找到任何配置文件，退出。")
+        return
+
     total_start = time.time()
 
     print("\n" + "=" * 70)
@@ -243,10 +222,6 @@ def run_comparison(
             continue
         config = load_config(config_path)
         config = apply_cli_overrides(config, args)
-
-        # 保留第一个模型的输出配置（避免循环后再加载）
-        if output_config is None:
-            output_config = config["output"]
 
         # 训练
         result = train_single_model(model_name, config, device)
@@ -453,7 +428,8 @@ def main() -> None:
                 sys.exit(1)
 
             # 1. 加载检查点，提取配置和模型名
-            checkpoint = torch.load(args.resume, map_location="cpu")
+            # weights_only=False：resume 需要读取 checkpoint 中的 config 等元数据
+            checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
             saved_config = checkpoint.get("config")
             if saved_config is None:
                 print("[错误] 检查点中未找到配置信息，无法恢复训练。")

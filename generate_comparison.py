@@ -1,12 +1,8 @@
-"""
-从已有 checkpoint 生成四模型对比图表和报告（不重新训练）
-"""
+"""从已有 checkpoint 生成四模型对比图表和报告（不重新训练）"""
 import json
 import os
-import time
 from typing import Dict
 
-import numpy as np
 import torch
 
 from models import get_model
@@ -29,8 +25,10 @@ def load_history(model_name: str) -> dict:
 
 
 def evaluate_model(model_name: str, device: torch.device):
-    """从 best checkpoint 加载模型并测试"""
+    """从 best checkpoint 加载模型并评估，复用 Trainer.test() 和 evaluate_metrics()。"""
     import yaml
+
+    from utils.train_eval import Trainer
 
     # 加载配置
     with open(f"configs/{model_name}.yaml", "r", encoding="utf-8") as f:
@@ -41,88 +39,43 @@ def evaluate_model(model_name: str, device: torch.device):
     model_cfg.pop("name", None)
     model = get_model(model_name, **model_cfg)
 
-    # 加载最佳权重
+    # 加载最佳权重（新格式仅存 state_dict；旧格式完整 dict 自动回退）
     best_path = f"results/checkpoints/{model_name}_best.pth"
-    checkpoint = torch.load(best_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(device)
-    model.eval()
+    try:
+        state_dict = torch.load(best_path, map_location=device, weights_only=True)
+    except Exception:
+        ckpt = torch.load(best_path, map_location=device, weights_only=False)
+        state_dict = ckpt["model_state_dict"]
+        print(f"[警告] {model_name} 使用旧格式 checkpoint，请重新训练")
+    model.load_state_dict(state_dict)
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # 从 history JSON 读取最佳验证准确率
+    history = load_history(model_name)
     print(f"\n{'='*60}")
     print(f"[评估] {MODEL_DISPLAY_NAMES.get(model_name, model_name)}")
     print(f"[参数量] {num_params:,}")
-    print(f"[checkpoint epoch] {checkpoint.get('epoch', 'N/A')}")
+    print(f"[最佳验证准确率] {history.get('best_val_acc', 0):.2f}%")
 
     # 加载数据
-    train_loader, val_loader, test_loader = get_cifar10_dataloaders(
+    _, _, test_loader = get_cifar10_dataloaders(
         batch_size=config["training"]["batch_size"],
         num_workers=0,
         data_dir=config["data"]["data_dir"],
         val_split=config["data"]["val_split"],
     )
 
-    # 测试
-    criterion = torch.nn.CrossEntropyLoss()
-    running_loss = 0.0
-    all_preds, all_targets = [], []
-
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            running_loss += loss.item() * images.size(0)
-            _, predicted = outputs.max(1)
-            all_preds.append(predicted.cpu().numpy())
-            all_targets.append(labels.cpu().numpy())
-
-    test_loss = running_loss / len(test_loader.dataset)
-    all_preds = np.concatenate(all_preds)
-    all_targets = np.concatenate(all_targets)
-    test_acc = 100.0 * (all_preds == all_targets).mean()
-
-    # 混淆矩阵
-    confusion_mat = np.zeros((10, 10), dtype=np.int64)
-    np.add.at(confusion_mat, (all_targets, all_preds), 1)
-    row_sums = confusion_mat.sum(axis=1, keepdims=True)
-    confusion_mat_norm = np.divide(
-        confusion_mat, row_sums,
-        out=np.zeros_like(confusion_mat, dtype=np.float64),
-        where=row_sums > 0,
-    )
-    per_class_acc = 100.0 * confusion_mat_norm.diagonal()
-
-    # 推理速度
-    model.eval()
-    total_samples = 0
-    inference_start = time.time()
-    with torch.no_grad():
-        for images, _ in test_loader:
-            images = images.to(device)
-            _ = model(images)
-            total_samples += images.size(0)
-    inference_time = time.time() - inference_start
-    inference_speed = total_samples / inference_time if inference_time > 0 else 0
-
-    print(f"[测试准确率] {test_acc:.2f}%")
-    print(f"[推理速度] {inference_speed:.0f} 样本/秒")
+    # 复用 Trainer 的 evaluate_metrics（消除重复的测试循环和指标计算）
+    trainer = Trainer(model, device, config)
+    metrics = trainer.evaluate_metrics(test_loader)
 
     return {
-        "test_acc": test_acc,
-        "test_loss": test_loss,
+        **metrics,
         "num_params": num_params,
-        "training_time": 0,  # 后续从 history 估算
-        "inference_speed": inference_speed,
-        "confusion_matrix": confusion_mat_norm,
-        "per_class_acc": per_class_acc,
-        "history": {
-            "train_loss": [],
-            "train_acc": [],
-            "val_loss": [],
-            "val_acc": [],
-        },
-        "best_val_acc": checkpoint.get("best_val_acc", 0),
+        "training_time": 0,  # 由调用方根据 history 推算
+        "history": history,
+        "best_val_acc": history.get("best_val_acc", 0),
     }
 
 
@@ -136,27 +89,18 @@ def main():
     all_histories: Dict[str, dict] = {}
 
     for model_name in model_names:
-        # 加载历史
-        history = load_history(model_name)
-        all_histories[model_name] = history
-
-        # 评估模型
         result = evaluate_model(model_name, device)
-        result["history"] = history
-        result["best_val_acc"] = history.get("best_val_acc", 0)
         all_results[model_name] = result
+        all_histories[model_name] = result["history"]
 
-    # 估算训练时间（从历史 epoch 数 × 平均 epoch 时间推算）
-    # 实际训练时间需要从日志获取，这里用各模型 15-epoch 的实测参考值
-    training_times = {
-        "lenet": 15 * 120,      # ~2 min/epoch
-        "simple_cnn": 15 * 180,  # ~3 min/epoch
-        "vgg": 15 * 480,         # ~8 min/epoch
-        "resnet": 15 * 540,      # ~9 min/epoch
-    }
-    for name, t in training_times.items():
-        if name in all_results:
-            all_results[name]["training_time"] = t
+    # 从 history JSON 获取实际 epoch 数，结合参数量推算训练时间
+    # 基准：LeNet (~62K params) 在 CPU 上约 120 秒/epoch
+    for name, res in all_results.items():
+        epochs = len(all_histories[name].get("train_loss", []))
+        params = res["num_params"]
+        per_epoch_est = max(60, 120 * (params / 62000))
+        res["training_time"] = epochs * per_epoch_est
+        res["training_time_estimated"] = True
 
     # ========== 保存汇总 ==========
     output_dir = "results/plots"
@@ -201,21 +145,27 @@ def main():
 
     # ========== 控制台报告 ==========
     print(f"\n{'='*80}")
-    print("CNN 架构对比分析 —— 15 Epoch 总结报告")
+    epoch_count = {name: len(h.get("train_loss", [])) for name, h in all_histories.items()}
+    print("CNN 架构对比分析 —— 总结报告")
     print(f"{'='*80}")
-    print(f"{'模型':<20} {'测试准确率':>10} {'最佳验证':>10} {'参数量':>12} {'推理速度':>14}")
+    print(f"{'模型':<20} {'测试准确率':>10} {'最佳验证':>10} {'参数量':>12} {'训练时间(估)':>10} {'推理速度':>14}")
     print("-" * 80)
     for model_name in model_names:
         res = all_results[model_name]
         display = MODEL_DISPLAY_NAMES.get(model_name, model_name)
+        t = res["training_time"]
+        time_str = f"{t/60:.0f}分钟" if t >= 60 else f"{t:.0f}秒"
         print(
             f"{display:<20} "
             f"{res['test_acc']:>8.2f}% "
             f"{res['best_val_acc']:>8.2f}% "
             f"{res['num_params']:>10,} "
+            f"{time_str:>10} "
             f"{res['inference_speed']:>10.0f} 样本/秒"
         )
     print("-" * 80)
+    print(f"※ 训练时间为基于参数量推算的估算值（epoch数从history获取，各模型: "
+          f"{', '.join(f'{MODEL_DISPLAY_NAMES.get(n, n)}={epoch_count[n]}epoch' for n in model_names)}）")
     print(f"图表保存位置: {os.path.abspath(output_dir)}")
     print(f"{'='*80}")
 
